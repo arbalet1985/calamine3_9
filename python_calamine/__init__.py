@@ -916,3 +916,58 @@ def load_workbook(
 ) -> CalamineWorkbook:
     """Открыть книгу из пути или файлоподобного объекта."""
     return CalamineWorkbook.from_object(path_or_filelike, load_tables)
+
+
+# ---------------------------------------------------------------------------
+# Чтение прямо в pandas.DataFrame — НЕ зависит от версии pandas.
+#
+# pandas получил engine="calamine" только в версии 2.2.0. На более старых
+# pandas вызов pd.read_excel(..., engine="calamine") падает с
+# «Unknown engine: calamine», даже если модуль python_calamine установлен.
+# Эта функция читает файл нашим парсером напрямую и собирает DataFrame
+# сама, поэтому работает на ЛЮБОЙ версии pandas (и с нашим чистым Python
+# модулем, и с оригинальным Rust-пакетом).
+# ---------------------------------------------------------------------------
+
+def read_excel(
+    path_or_filelike: Union[str, os.PathLike, BinaryIO],
+    sheet_name: Union[int, str] = 0,
+    header: Optional[int] = 0,
+):
+    """Прочитать лист Excel/ODS в pandas.DataFrame без участия pandas-движков.
+
+    Args:
+        path_or_filelike: путь к файлу или файлоподобный объект.
+        sheet_name: индекс (int) или имя (str) листа. По умолчанию первый.
+        header: номер строки с заголовками (0 — первая строка). None —
+                без заголовков (колонки будут 0,1,2,...).
+
+    Returns:
+        pandas.DataFrame
+    """
+    import pandas as pd
+
+    wb = CalamineWorkbook.from_object(path_or_filelike)
+    if isinstance(sheet_name, int):
+        sheet = wb.get_sheet_by_index(sheet_name)
+    else:
+        sheet = wb.get_sheet_by_name(sheet_name)
+
+    rows = sheet.to_python()
+    if not rows:
+        return pd.DataFrame()
+
+    # Выравниваем длину строк по самой широкой (calamine обрезает хвостовые
+    # пустые ячейки построчно, у pandas все строки должны быть одной ширины).
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+
+    if header is None:
+        return pd.DataFrame(rows)
+
+    columns = rows[header]
+    data = rows[header + 1:]
+    # Пустые «» в пустых ячейках pandas-движок calamine трактует как NaN —
+    # повторяем это поведение, чтобы dropna/fillna в скрипте работали как раньше.
+    df = pd.DataFrame(data, columns=columns)
+    return df
